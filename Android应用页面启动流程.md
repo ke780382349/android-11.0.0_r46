@@ -135,7 +135,7 @@ public ActivityResult execStartActivity(
 }
 ```
 这个函数中，看起来代码量挺多的，但是核心逻辑其实就一个，就是把启动请求转发给`ActivityTaskManager`然后就等待启动结果了
-这里简单介绍几个参数
+这里简单介绍几个`execStartActivity`的参数
 `who`代表是发起方，在本次案例里指的是MainActivity
 `contextThread`代表的是发起方对应的进程信息，是`ApplicationThread`对象
 `token`代表的是发起方的一个标记，用于查找发起方的`ActivityRecord`
@@ -143,4 +143,56 @@ public ActivityResult execStartActivity(
 `intent`这个就是封装了目标页面的意图信息
 `requestCode`这个就是启动code，本案例中为-1
 `options`启动参数，涉及到一些动画之类的，本案例中为null
-接下来我们通过IPC机制来到`system_server`进程中，进入`ActivityTaskManager`类中一探究竟吧
+接下来我们通过IPC机制来到`system_server`进程中，进入`ActivityTaskManager`类中一探究竟吧.
+```java
+public final int startActivity(IApplicationThread caller, String callingPackage,
+        String callingFeatureId, Intent intent, String resolvedType, IBinder resultTo,
+        String resultWho, int requestCode, int startFlags, ProfilerInfo profilerInfo,
+        Bundle bOptions) {
+    return startActivityAsUser(caller, callingPackage, callingFeatureId, intent, resolvedType,
+            resultTo, resultWho, requestCode, startFlags, profilerInfo, bOptions,
+            UserHandle.getCallingUserId());
+}
+```
+可以看到进入`system_server`进程的第一个函数很简单，仅仅是内部调用了一下`startActivityAsUser`函数，多传递了一个`userId`参数。这里的`userId`则是通过`Binder`获取调用者的uid，然后再通过`UserHandle`计算得到。这个值通常是机主，也就是0。好，继续向下看吧
+```java
+public int startActivityAsUser(IApplicationThread caller, String callingPackage,
+        String callingFeatureId, Intent intent, String resolvedType, IBinder resultTo,
+        String resultWho, int requestCode, int startFlags, ProfilerInfo profilerInfo,
+        Bundle bOptions, int userId) {
+    return startActivityAsUser(caller, callingPackage, callingFeatureId, intent, resolvedType,
+            resultTo, resultWho, requestCode, startFlags, profilerInfo, bOptions, userId,
+            true /*validateIncomingUser*/);
+}
+```
+这个函数也比较简单，调用了另一个重载函数，多传递了一个true进去。继续往下看
+```java
+private int startActivityAsUser(IApplicationThread caller, String callingPackage,
+        @Nullable String callingFeatureId, Intent intent, String resolvedType,
+        IBinder resultTo, String resultWho, int requestCode, int startFlags,
+        ProfilerInfo profilerInfo, Bundle bOptions, int userId, boolean validateIncomingUser) {
+    assertPackageMatchesCallingUid(callingPackage);
+    enforceNotIsolatedCaller("startActivityAsUser");
+
+    // 对调用用户做合法性校验、如果不是同一个用户，还要校验权限等
+    userId = getActivityStartController().checkTargetUser(userId, validateIncomingUser,
+            Binder.getCallingPid(), Binder.getCallingUid(), "startActivityAsUser");
+
+    // TODO: Switch to user app stacks here.
+    return getActivityStartController().obtainStarter(intent, "startActivityAsUser")
+            .setCaller(caller)
+            .setCallingPackage(callingPackage)
+            .setCallingFeatureId(callingFeatureId)
+            .setResolvedType(resolvedType)
+            .setResultTo(resultTo)
+            .setResultWho(resultWho)
+            .setRequestCode(requestCode)
+            .setStartFlags(startFlags)
+            .setProfilerInfo(profilerInfo)
+            .setActivityOptions(bOptions)
+            .setUserId(userId)
+            .execute();
+
+}
+```
+在这个函数里，做了一下用户的合法性校验，校验通过后继续向下执行，通过`obtainStarter`函数获取一个`ActivityStarter`对象，然后把启动请求涉及的参数都通过set方法设置进去。最后调用`execute`来继续启动
